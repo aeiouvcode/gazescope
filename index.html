@@ -381,7 +381,7 @@ const Engine={
   },
   startImage(){ this.mode='image'; },
   startMouse(){
-    this.mode='mouse';
+    this.mode='mouse'; this.lastLM=null;
     addEventListener('mousemove',e=>{ if(this.mode!=='mouse')return;
       const mx=(e.clientX/innerWidth-0.5)*2, my=(e.clientY/innerHeight-0.5)*2;
       const s=0.22; // scale into iris-like range

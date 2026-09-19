@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:; font-src 'self'; object-src 'none'; base-uri 'none'">
+<title>GAZESCOPE · AR eye tracker</title>
+<meta name="description" content="On-device AR eye tracking and privacy shield. Camera frames never leave your device.">
+<style>
+:root{
+  --ink:#0b0d11; --ink2:#10131a; --panel:#151a23; --line:#242b38;
+  --amber:#f5a524; --amber2:#ffc65c; --amber-dim:#8a5f14;
+  --cyan:#57d0e8; --txt:#eef1f6; --mut:#98a2b3; --bad:#ff6b5e; --ok:#7bd88a;
+  --r:16px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{
+  background:var(--ink); color:var(--txt);
+  font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  overflow:hidden; -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
+.hidden{display:none !important}
+.screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;overflow:auto}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:22px;max-width:520px;width:100%}
+.brand{font-size:13px;letter-spacing:.35em;color:var(--amber);font-weight:700}
+h1{font-size:34px;line-height:1.15;font-weight:800;margin:10px 0 6px;letter-spacing:-.02em}
+.sub{color:var(--mut);font-size:15px}
+.privacy{display:flex;gap:12px;margin:18px 0;padding:14px 16px;border:1px solid var(--line);border-radius:12px;background:var(--ink2)}
+.privacy svg{flex:none;margin-top:2px}
+.privacy p{font-size:13.5px;color:var(--mut)}
+.privacy b{color:var(--txt)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:13px 22px;border-radius:12px;font-weight:650;font-size:15px;transition:transform .08s ease, background .15s}
+.btn:active{transform:scale(.97)}
+.btn-amber{background:var(--amber);color:#1a1206;width:100%}
+.btn-amber:hover{background:var(--amber2)}
+.btn-ghost{border:1px solid var(--line);color:var(--mut);width:100%;margin-top:10px}
+.btn-ghost:hover{color:var(--txt);border-color:var(--mut)}
+.fine{margin-top:18px;font-size:12.5px;color:var(--mut);max-width:520px;text-align:center}
+/* HUD */
+#hud{position:fixed;top:0;left:0;right:0;z-index:40;display:flex;align-items:center;gap:8px;padding:10px 12px;flex-wrap:wrap;pointer-events:none}
+#hud>*{pointer-events:auto}
+.pill{background:rgba(16,19,26,.82);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:999px;padding:6px 12px;font-size:12.5px;color:var(--mut);display:inline-flex;align-items:center;gap:6px}
+.pill b{color:var(--txt);font-weight:650}
+.dot-live{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 8px var(--ok)}
+.dot-live.off{background:var(--bad);box-shadow:none}
+.hud-btn{background:rgba(16,19,26,.82);backdrop-filter:blur(8px);border:1px solid var(--line);border-radius:10px;padding:7px 12px;font-size:12.5px;color:var(--txt)}
+.hud-btn:hover{border-color:var(--amber);color:var(--amber2)}
+.hud-btn.on{border-color:var(--amber);color:var(--amber);background:rgba(245,165,36,.12)}
+#hud-spacer{flex:1}
+/* Canvases */
+#stage,#heat,#fx{position:fixed;inset:0;width:100vw;height:100vh}
+#stage{z-index:10;background:#000}
+#heat{z-index:20;pointer-events:none;opacity:.9}
+#fx{z-index:30;pointer-events:none}
+/* calibration */
+#calib-layer{position:fixed;inset:0;z-index:50;background:radial-gradient(120% 120% at 50% 40%, #141922 0%, var(--ink) 70%)}
+#calib-target{position:absolute;width:44px;height:44px;margin:-22px 0 0 -22px;border-radius:50%;
+  background:radial-gradient(circle,var(--amber2) 0 22%, var(--amber) 23% 45%, rgba(245,165,36,.18) 46% 100%);
+  box-shadow:0 0 32px rgba(245,165,36,.55);transition:transform .25s ease;transform:scale(1)}
+#calib-target.settle{animation:pulse 1s infinite}
+@keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.18)}}
+#calib-ring{position:absolute;width:64px;height:64px;margin:-32px 0 0 -32px;border-radius:50%;pointer-events:none}
+#calib-info{position:fixed;top:14px;left:0;right:0;text-align:center;color:var(--mut);font-size:13.5px;z-index:51}
+#calib-info b{color:var(--txt)}
+#calib-hint{position:fixed;bottom:88px;left:0;right:0;text-align:center;color:var(--bad);font-size:13.5px;z-index:51}
+#calib-cancel{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:51}
+/* banners */
+#practice-banner{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:45;background:rgba(87,208,232,.12);border:1px solid rgba(87,208,232,.4);color:var(--cyan);border-radius:999px;padding:7px 16px;font-size:12.5px;backdrop-filter:blur(8px)}
+#demo-banner{position:fixed;bottom:14px;left:50%;transform:translateX(-50%);z-index:45;background:rgba(245,165,36,.1);border:1px solid rgba(245,165,36,.4);color:var(--amber2);border-radius:999px;padding:7px 16px;font-size:12.5px;backdrop-filter:blur(8px)}
+/* shield */
+#shield{position:fixed;inset:0;z-index:80;display:flex;align-items:center;justify-content:center;
+  backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);
+  background:linear-gradient(105deg, rgba(11,13,17,.72) 0%, rgba(11,13,17,.45) 45%, rgba(11,13,17,.86) 100%)}
+#shield .lock{background:rgba(16,19,26,.85);border:1px solid var(--line);border-radius:14px;padding:14px 20px;text-align:center;max-width:340px}
+#shield .lock b{display:block;font-size:14px;margin-bottom:4px}
+#shield .lock span{font-size:12.5px;color:var(--mut)}
+/* modal */
+#modal-wrap{position:fixed;inset:0;z-index:90;background:rgba(5,6,9,.7);display:flex;align-items:center;justify-content:center;padding:22px;backdrop-filter:blur(4px)}
+#modal .card{max-width:440px}
+#modal h2{font-size:19px;margin-bottom:8px}
+#modal p{color:var(--mut);font-size:14px;margin-bottom:6px}
+#modal .btn{margin-top:14px}
+#modal kbd{background:var(--ink2);border:1px solid var(--line);border-radius:6px;padding:1px 7px;font-size:12.5px}
+/* settings drawer */
+#drawer{position:fixed;top:0;right:0;bottom:0;width:min(380px,92vw);z-index:70;background:var(--ink2);border-left:1px solid var(--line);padding:20px;overflow:auto;transform:translateX(0);transition:transform .2s}
+#drawer.hidden{transform:translateX(105%);display:block !important}
+#drawer h2{font-size:17px;margin-bottom:2px}
+#drawer .sec{margin-top:18px;padding-top:16px;border-top:1px solid var(--line)}
+#drawer .sec h3{font-size:12px;letter-spacing:.14em;text-transform:uppercase;color:var(--mut);margin-bottom:10px}
+.row{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:10px 0;font-size:14px}
+.row label{color:var(--txt)}
+.row .val{color:var(--amber2);font-variant-numeric:tabular-nums;min-width:44px;text-align:right}
+input[type=range]{-webkit-appearance:none;width:150px;height:4px;border-radius:2px;background:var(--line);outline:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:16px;height:16px;border-radius:50%;background:var(--amber);cursor:pointer}
+.switch{position:relative;width:42px;height:24px;border-radius:999px;background:var(--line);transition:background .15s;flex:none}
+.switch::after{content:"";position:absolute;top:3px;left:3px;width:18px;height:18px;border-radius:50%;background:var(--mut);transition:all .15s}
+.switch.on{background:var(--amber-dim)}
+.switch.on::after{left:21px;background:var(--amber)}
+.mini{font-size:12px;color:var(--mut);margin-top:4px}
+.dbtn{display:inline-block;padding:8px 12px;border:1px solid var(--line);border-radius:9px;font-size:12.5px;color:var(--txt);margin:4px 6px 0 0}
+.dbtn:hover{border-color:var(--amber);color:var(--amber2)}
+.dbtn.danger:hover{border-color:var(--bad);color:var(--bad)}
+input[type=password]{background:var(--ink);border:1px solid var(--line);border-radius:9px;color:var(--txt);padding:9px 12px;font:inherit;width:100%;margin-top:6px}
+/* accuracy report */
+#acc-report{margin-top:16px;background:var(--ink2);border:1px solid var(--line);border-radius:12px;padding:16px}
+#acc-report .big{font-size:30px;font-weight:800;color:var(--amber2)}
+#acc-report .grade{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+#selftest{position:fixed;inset:0;z-index:100;background:var(--ink);padding:30px;overflow:auto;font:13px/1.6 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:var(--mut)}
+#selftest b{color:var(--txt)}
+.loadbar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;margin:14px 0 4px}
+.loadbar i{display:block;height:100%;width:0%;background:var(--amber);transition:width .3s}
+@media (max-width:640px){ h1{font-size:27px} }
+</style>
+</head>
+<body>
+
+<!-- ============ INTRO ============ -->
+<div id="screen-intro" class="screen">
+  <div class="card">
+    <div class="brand">GAZESCOPE</div>
+    <h1>AR eye tracking,<br>entirely on your device.</h1>
+    <p class="sub">Calibrate in twenty seconds, then watch your gaze float across the screen - face mesh, iris rings and gaze rays drawn live over your camera.</p>
+    <div class="privacy">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#f5a524" stroke-width="1.8"><path d="M12 3l7 3v5c0 4.5-3 8.5-7 10-4-1.5-7-5.5-7-10V6l7-3z"/><path d="M9 12l2 2 4-4" stroke="#7bd88a"/></svg>
+      <p><b>Your camera frames never leave this device.</b> All tracking runs locally in your browser. There is no server, no account, and nothing is uploaded - you can go offline after the page loads and everything still works.</p>
+    </div>
+    <div id="intro-load" class="hidden">
+      <div class="loadbar"><i id="load-fill"></i></div>
+      <p class="mini" id="load-label">Preparing the on-device vision model...</p>
+    </div>
+    <button class="btn btn-amber" id="btn-start">Start with camera</button>
+    <button class="btn btn-ghost" id="btn-practice">Practice without a camera</button>
+  </div>
+  <p class="fine">Works on phone front cameras and desktop webcams. Best in decent light, an arm's length from the screen. You'll be asked for camera permission - saying no is fine, nothing breaks.</p>
+</div>
+
+<!-- ============ CALIBRATION ============ -->
+<div id="calib-layer" class="hidden">
+  <div id="calib-info"></div>
+  <div id="calib-ring"></div>
+  <div id="calib-target"></div>
+  <div id="calib-hint"></div>
+  <button id="calib-cancel" class="hud-btn">Cancel</button>
+</div>
+
+<!-- ============ TRACK ============ -->
+<canvas id="stage"></canvas>
+<canvas id="heat"></canvas>
+<canvas id="fx"></canvas>
+
+<div id="hud" class="hidden">
+  <span class="pill"><span class="dot-live" id="live-dot"></span><b id="hud-status">Starting</b></span>
+  <span class="pill" id="hud-acc">accuracy <b>not calibrated</b></span>
+  <span class="pill" id="hud-fps">-- fps</span>
+  <span id="hud-spacer"></span>
+  <button class="hud-btn" id="btn-shield">Privacy Shield</button>
+  <button class="hud-btn" id="btn-heat">Heatmap</button>
+  <button class="hud-btn" id="btn-recal">Recalibrate</button>
+  <button class="hud-btn" id="btn-settings">Settings</button>
+  <button class="hud-btn" id="btn-stop">Stop</button>
+</div>
+
+<div id="practice-banner" class="hidden">Practice mode - your mouse is standing in for your gaze. Nothing here is real tracking.</div>
+<div id="demo-banner" class="hidden">Demo on a still photo - real face detection, synthetic gaze. Allow a camera for the real thing.</div>
+
+<!-- ============ PRIVACY SHIELD ============ -->
+<div id="shield" class="hidden">
+  <div class="lock">
+    <b>Privacy Shield is on</b>
+    <span>Look back at the screen to clear it, or press Esc to dismiss. Shielding covers this page only - not the rest of your screen.</span>
+  </div>
+</div>
+
+<!-- ============ SETTINGS DRAWER ============ -->
+<div id="drawer" class="hidden">
+  <h2>Settings</h2>
+  <p class="mini">Everything is stored on this device only.</p>
+
+  <div class="sec">
+    <h3>Tracking feel</h3>
+    <div class="row"><label>Smoothing</label><input type="range" id="set-smooth" min="0" max="100" value="55"><span class="val" id="set-smooth-v">55</span></div>
+    <div class="row"><label>Gaze trail</label><div class="switch on" id="set-trail"></div></div>
+    <div class="row"><label>Face mesh overlay</label><div class="switch on" id="set-mesh"></div></div>
+    <div class="row"><label>Gaze rays</label><div class="switch on" id="set-rays"></div></div>
+  </div>
+
+  <div class="sec">
+    <h3>Privacy Shield</h3>
+    <p class="mini">Blurs this page when your head turns away past your comfort angle. It protects this page only, not your whole screen, and it can be fooled by still photos - it's a privacy nudge, not a lock.</p>
+    <div class="row"><label>Shield enabled</label><div class="switch" id="set-shield"></div></div>
+    <div class="row"><label>Comfort angle</label><input type="range" id="set-angle" min="2" max="30" value="15"><span class="val" id="set-angle-v">15°</span></div>
+    <div class="row"><label>Blur strength</label><input type="range" id="set-blur" min="4" max="40" value="18"><span class="val" id="set-blur-v">18px</span></div>
+    <button class="dbtn" id="btn-recenter">Recenter "straight ahead"</button>
+  </div>
+
+  <div class="sec">
+    <h3>Session data</h3>
+    <div class="row"><label>Save session on this device</label><div class="switch" id="set-save"></div></div>
+    <p class="mini">Heatmap points are kept in memory unless this is on. Set a passphrase and saved data is encrypted with AES-GCM before it touches storage.</p>
+    <input type="password" id="set-pass" placeholder="Passphrase for encryption (optional)" autocomplete="off">
+    <div style="margin-top:8px">
+      <button class="dbtn" id="btn-pass-save">Set passphrase</button>
+      <button class="dbtn" id="btn-export-csv">Export CSV</button>
+      <button class="dbtn" id="btn-export-json">Export JSON</button>
+      <button class="dbtn danger" id="btn-wipe">Wipe everything</button>
+    </div>
+  </div>
+  <div style="margin-top:22px"><button class="btn btn-ghost" id="btn-drawer-close" style="margin-top:0">Close</button></div>
+</div>
+
+<!-- ============ MODAL ============ -->
+<div id="modal-wrap" class="hidden"><div id="modal"><div class="card">
+  <h2 id="modal-title"></h2>
+  <div id="modal-body"></div>
+  <div id="modal-actions"></div>
+</div></div></div>
+
+<pre id="selftest" class="hidden"></pre>
+
+<video id="cam" playsinline muted class="hidden"></video>
+<img id="demo-img" src="selftest/face.jpg" class="hidden" alt="">
+<script src="mediapipe/face_mesh.js"></script>
+<script>
+"use strict";
+/* ================= utils ================= */
+const $=id=>document.getElementById(id);
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const QA={errors:[],selftest:null};
+window.addEventListener('error',e=>QA.errors.push(String(e.message||e.error)));
+window.addEventListener('unhandledrejection',e=>QA.errors.push('rejection: '+String(e.reason&&e.reason.message||e.reason)));
+window.__QA=QA;
+
+/* ================= crypto (AES-GCM, passphrase) ================= */
+const Crypto_={
+  async key(pass,salt){
+    const enc=new TextEncoder();
+    const km=await crypto.subtle.importKey('raw',enc.encode(pass),'PBKDF2',false,['deriveKey']);
+    return crypto.subtle.deriveKey({name:'PBKDF2',salt,iterations:250000,hash:'SHA-256'},km,{name:'AES-GCM',length:256},false,['encrypt','decrypt']);
+  },
+  async encrypt(pass,obj){
+    const salt=crypto.getRandomValues(new Uint8Array(16)), iv=crypto.getRandomValues(new Uint8Array(12));
+    const k=await this.key(pass,salt);
+    const ct=await crypto.subtle.encrypt({name:'AES-GCM',iv},k,new TextEncoder().encode(JSON.stringify(obj)));
+    const out=new Uint8Array(16+12+ct.byteLength); out.set(salt,0); out.set(iv,16); out.set(new Uint8Array(ct),28);
+    return btoa(String.fromCharCode(...out));
+  },
+  async decrypt(pass,b64){
+    const bin=Uint8Array.from(atob(b64),c=>c.charCodeAt(0));
+    const k=await this.key(pass,bin.slice(0,16));
+    const pt=await crypto.subtle.decrypt({name:'AES-GCM',iv:bin.slice(16,28)},k,bin.slice(28));
+    return JSON.parse(new TextDecoder().decode(pt));
+  }
+};
+
+/* ================= storage ================= */
+const Store={
+  pass:null, // in-memory only
+  get(k,d){try{const v=localStorage.getItem('gazescope.'+k);return v?JSON.parse(v):d}catch(e){return d}},
+  set(k,v){try{localStorage.setItem('gazescope.'+k,JSON.stringify(v))}catch(e){}},
+  async setSecure(k,obj){ if(this.pass){ this.set(k,{enc:await Crypto_.encrypt(this.pass,obj)}); } else this.set(k,obj); },
+  async getSecure(k,d){ const v=this.get(k,null); if(!v) return d; if(v.enc){ if(!this.pass) return d; try{return await Crypto_.decrypt(this.pass,v.enc)}catch(e){return d} } return v; },
+  wipe(){ Object.keys(localStorage).filter(k=>k.startsWith('gazescope.')).forEach(k=>localStorage.removeItem(k)); }
+};
+const settings=Object.assign({smooth:55,trail:true,mesh:true,rays:true,shield:false,angle:15,blur:18,save:false},Store.get('settings',{}));
+function saveSettings(){Store.set('settings',settings)}
+
+/* ================= One Euro filter ================= */
+class OneEuro{
+  constructor(minCutoff,beta,dCutoff=1){this.mc=minCutoff;this.beta=beta;this.dc=dCutoff;this.x=null;this.dx=0;this.t=null;}
+  alpha(c,dt){const tau=1/(2*Math.PI*c);return 1/(1+tau/dt);}
+  filter(x,t){
+    if(this.t===null){this.t=t;this.x=x;return x;}
+    const dt=Math.max(1e-3,t-this.t);this.t=t;
+    const d=(x-this.x)/dt;
+    const ad=this.alpha(this.dc,dt);
+    this.dx=this.dx+ad*(d-this.dx);
+    const cut=this.mc+this.beta*Math.abs(this.dx);
+    const a=this.alpha(cut,dt);
+    this.x=this.x+a*(x-this.x);
+    return this.x;
+  }
+}
+
+/* ================= ridge regression ================= */
+function ridgeFit(X,y,lambda){
+  const n=X.length,d=X[0].length;
+  const A=Array.from({length:d},()=>new Float64Array(d));
+  const b=new Float64Array(d);
+  for(let i=0;i<n;i++){const xi=X[i],yi=y[i];
+    for(let j=0;j<d;j++){b[j]+=xi[j]*yi;const xj=xi[j];for(let k=0;k<=j;k++)A[j][k]+=xj*xi[k];}}
+  for(let j=0;j<d;j++)for(let k=0;k<j;k++)A[k][j]=A[j][k];
+  for(let j=1;j<d;j++)A[j][j]+=lambda; A[0][0]+=lambda*0.01;
+  // gaussian elimination with partial pivot
+  for(let c=0;c<d;c++){
+    let p=c;for(let r=c+1;r<d;r++)if(Math.abs(A[r][c])>Math.abs(A[p][c]))p=r;
+    if(Math.abs(A[p][c])<1e-12)continue;
+    if(p!==c){const t=A[c];A[c]=A[p];A[p]=t;const tb=b[c];b[c]=b[p];b[p]=tb;}
+    const inv=1/A[c][c];
+    for(let r=0;r<d;r++){if(r===c)continue;const f=A[r][c]*inv;if(f===0)continue;
+      for(let k=c;k<d;k++)A[r][k]-=f*A[c][k]; b[r]-=f*b[c]; A[r][c]=0;}
+  }
+  const beta=new Float64Array(d);
+  for(let j=0;j<d;j++)beta[j]=Math.abs(A[j][j])<1e-12?0:b[j]/A[j][j];
+  return beta;
+}
+const dot=(b,f)=>{let s=0;for(let i=0;i<b.length;i++)s+=b[i]*f[i];return s;};
+
+/* ================= face feature extraction ================= */
+const LM={L:{o:33,i:133,up:159,lo:145,iris:468,ring:[469,470,471,472]},
+          R:{o:263,i:362,up:386,lo:374,iris:473,ring:[474,475,476,477]},
+          nose:1,fore:10,chin:152,ckL:234,ckR:454};
+const dist=(a,b)=>Math.hypot(a.x-b.x,a.y-b.y);
+function eyeFeat(lm,E){
+  const o=lm[E.o],i=lm[E.i],up=lm[E.up],lo=lm[E.lo],ir=lm[E.iris];
+  const cx=(o.x+i.x)/2, cy=(up.y+lo.y)/2, w=Math.max(1e-6,dist(o,i)), h=dist(up,lo);
+  return {ex:clamp((ir.x-cx)/w,-1.2,1.2), ey:clamp((ir.y-cy)/Math.max(h,0.25*w),-1.2,1.2), open:h/w};
+}
+function extractFeatures(lm){
+  const L=eyeFeat(lm,LM.L), R=eyeFeat(lm,LM.R);
+  const nose=lm[LM.nose], ckL=lm[LM.ckL], ckR=lm[LM.ckR], fore=lm[LM.fore], chin=lm[LM.chin];
+  const fw=Math.max(1e-6,dist(ckL,ckR)), fh=Math.max(1e-6,dist(fore,chin));
+  const yaw=(nose.x-(ckL.x+ckR.x)/2)/fw, pitch=(nose.y-(fore.y+chin.y)/2)/fh;
+  const roll=Math.atan2(lm[LM.R.o].y-lm[LM.L.o].y, lm[LM.R.o].x-lm[LM.L.o].x);
+  const exM=(L.ex+R.ex)/2, eyM=(L.ey+R.ey)/2;
+  const f=[1,exM,eyM,L.ex,L.ey,R.ex,R.ey,yaw,pitch,roll,exM*Math.abs(exM)*2,eyM*Math.abs(eyM)*2,L.ex*R.ex];
+  return {f,L,R,yaw,pitch,roll,blink:(L.open<0.12&&R.open<0.12)};
+}
+
+/* ================= gaze engine ================= */
+const Engine={
+  mode:null, fm:null, running:false, busy:false,
+  betaX:null, betaY:null, accuracy:null,
+  fx:null, fy:null, lastGaze:null, lastFeat:null, lastLM:null, faceOk:false,
+  onGaze:null, onPose:null, onFrame:null,
+  fpsN:0, fpsT:0, fps:0,
+  async initModel(onProg){
+    if(this.fm) return;
+    onProg&&onProg(0.15,'Loading the on-device vision model...');
+    this.fm=new FaceMesh({locateFile:f=>'mediapipe/'+f});
+    this.fm.setOptions({maxNumFaces:1,refineLandmarks:true,minDetectionConfidence:0.5,minTrackingConfidence:0.5});
+    this.fm.onResults(r=>this._results(r));
+    onProg&&onProg(0.55,'Compiling the model (first load takes a few seconds)...');
+    // warm-up on the bundled still so wasm + graph are fully live
+    await this.fm.send({image:$('demo-img')});
+    onProg&&onProg(1,'Model ready.');
+  },
+  _results(r){
+    this.fpsN++; const now=performance.now();
+    if(now-this.fpsT>800){this.fps=Math.round(this.fpsN*1000/(now-this.fpsT));this.fpsN=0;this.fpsT=now;}
+    const lms=r.multiFaceLandmarks;
+    if(lms&&lms.length&&lms[0].length>=478){
+      this.lastLM=lms[0]; this.faceOk=true;
+      const feat=extractFeatures(lms[0]); this.lastFeat=feat;
+      this._emitFromFeat(feat);
+    } else { this.lastLM=null; this.faceOk=false; this._emitNoFace(); }
+    this.onFrame&&this.onFrame();
+  },
+  _emitFromFeat(feat){
+    let gx=null,gy=null;
+    if(this.betaX&&this.betaY&&!feat.blink){
+      gx=clamp(dot(this.betaX,feat.f),0,1)*innerWidth;
+      gy=clamp(dot(this.betaY,feat.f),0,1)*innerHeight;
+      const t=performance.now()/1000;
+      gx=this.fx?this.fx.filter(gx,t):gx; gy=this.fy?this.fy.filter(gy,t):gy;
+    }
+    this.lastGaze=(gx===null)?null:{x:gx,y:gy,t:performance.now()};
+    this.onGaze&&this.onGaze(this.lastGaze,feat);
+    this.onPose&&this.onPose(feat);
+  },
+  _emitNoFace(){ this.lastGaze=null; this.onGaze&&this.onGaze(null,null); },
+  resetSmoothing(){
+    const mc=0.25+(100-settings.smooth)/100*2.4; // slider 0..100 -> 2.65..0.25 Hz
+    this.fx=new OneEuro(mc,0.06); this.fy=new OneEuro(mc,0.06);
+  },
+  async startCamera(){
+    const stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:'user',width:{ideal:1280},height:{ideal:720}}});
+    const v=$('cam'); v.srcObject=stream; await v.play();
+    this.mode='camera';
+  },
+  startImage(){ this.mode='image'; },
+  startMouse(){
+    this.mode='mouse';
+    addEventListener('mousemove',e=>{ if(this.mode!=='mouse')return;
+      const mx=(e.clientX/innerWidth-0.5)*2, my=(e.clientY/innerHeight-0.5)*2;
+      const s=0.22; // scale into iris-like range
+      const f=[1,mx*s,my*s,mx*s,my*s,mx*s,my*s,0,0,0,mx*s*Math.abs(mx*s)*2,my*s*Math.abs(my*s)*2,(mx*s)*(my*s)];
+      const feat={f,L:{open:.3},R:{open:.3},yaw:mx*0.3,pitch:my*0.3,roll:0,blink:false};
+      this.lastFeat=feat; this.faceOk=true; this._emitFromFeat(feat);
+    },{passive:true});
+  },
+  async pump(){
+    if(!this.running) return;
+    if(this.mode!=='mouse'&&!this.busy){
+      this.busy=true;
+      try{ await this.fm.send({image:this.mode==='image'?$('demo-img'):$('cam')}); }
+      catch(e){ QA.errors.push('pump: '+(e&&e.message||e)); }
+      this.busy=false;
+    }
+    requestAnimationFrame(()=>this.pump());
+  },
+  stop(){
+    this.running=false;
+    const v=$('cam'); if(v.srcObject){v.srcObject.getTracks().forEach(t=>t.stop()); v.srcObject=null;}
+  },
+  fit(samples){
+    const X=samples.map(s=>s.f), ys=samples.map(s=>s.y);
+    this.betaX=ridgeFit(X,samples.map(s=>s.x),1e-2);
+    this.betaY=ridgeFit(X,ys,1e-2);
+    this.resetSmoothing();
+  },
+  saveCalib(){ Store.setSecure('calib',{bx:[...this.betaX],by:[...this.betaY],acc:this.accuracy,at:Date.now()}); },
+  async loadCalib(){ const c=await Store.getSecure('calib',null); if(c&&c.bx){this.betaX=Float64Array.from(c.bx);this.betaY=Float64Array.from(c.by);this.accuracy=c.acc||null;this.resetSmoothing();return true} return false; }
+};
+
+/* ================= renderer ================= */
+const R={
+  stage:$('stage').getContext('2d'), fx:$('fx').getContext('2d'), heat:$('heat').getContext('2d'),
+  trail:[],
+  resize(){ for(const c of [$('stage'),$('fx'),$('heat')]){c.width=innerWidth*devicePixelRatio;c.height=innerHeight*devicePixelRatio;}
+    for(const k of ['stage','fx','heat'])this[k].setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0); },
+  // map normalized video coords -> css px on stage (mirrored, cover)
+  vidMap(){
+    const src=Engine.mode==='image'?$('demo-img'):$('cam');
+    const vw=src.videoWidth||src.naturalWidth||16, vh=src.videoHeight||src.naturalHeight||9;
+    const s=Math.max(innerWidth/vw,innerHeight/vh);
+    const dw=vw*s, dh=vh*s, ox=(innerWidth-dw)/2, oy=(innerHeight-dh)/2;
+    return {p:(nx,ny)=>[ox+(1-nx)*dw, oy+ny*dh], dw,dh,ox,oy,src};
+  },
+  draw(){
+    const ctx=this.stage; ctx.clearRect(0,0,innerWidth,innerHeight);
+    const vm=this.vidMap();
+    if(Engine.mode!=='mouse'){
+      ctx.save();
+      // draw source mirrored, cover
+      ctx.translate(vm.ox+vm.dw,vm.oy); ctx.scale(-1,1);
+      try{ctx.drawImage(vm.src,0,0,vm.dw,vm.dh);}catch(e){}
+      ctx.restore();
+      ctx.fillStyle='rgba(6,8,12,.38)'; ctx.fillRect(0,0,innerWidth,innerHeight);
+    } else {
+      ctx.fillStyle='#0b0d11'; ctx.fillRect(0,0,innerWidth,innerHeight);
+      ctx.strokeStyle='rgba(245,165,36,.05)'; ctx.lineWidth=1;
+      for(let x=0;x<innerWidth;x+=64){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,innerHeight);ctx.stroke();}
+      for(let y=0;y<innerHeight;y+=64){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(innerWidth,y);ctx.stroke();}
+    }
+    const lm=Engine.lastLM;
+    if(lm&&settings.mesh){
+      // sparse landmark dots
+      ctx.fillStyle='rgba(87,208,232,.5)';
+      for(let i=0;i<lm.length;i+=3){const [x,y]=vm.p(lm[i].x,lm[i].y);ctx.fillRect(x-.75,y-.75,1.5,1.5);}
+      // eye contours
+      for(const c of [[33,7,163,144,145,153,154,155,133,173,157,158,159,160,161,246],
+                      [362,382,381,380,374,373,390,249,263,466,388,387,386,385,384,398]]){
+        ctx.beginPath(); c.forEach((idx,k)=>{const [x,y]=vm.p(lm[idx].x,lm[idx].y);k?ctx.lineTo(x,y):ctx.moveTo(x,y);});
+        ctx.closePath(); ctx.strokeStyle='rgba(87,208,232,.85)'; ctx.lineWidth=1.4; ctx.stroke();
+      }
+      // iris rings + glint
+      for(const E of [LM.L,LM.R]){
+        const [cx,cy]=vm.p(lm[E.iris].x,lm[E.iris].y);
+        const [rx,ry]=vm.p(lm[E.ring[0]].x,lm[E.ring[0]].y);
+        const r=Math.max(3,Math.hypot(rx-cx,ry-cy));
+        ctx.beginPath();ctx.arc(cx,cy,r,0,7);ctx.strokeStyle='#f5a524';ctx.lineWidth=2;ctx.stroke();
+        ctx.beginPath();ctx.arc(cx,cy,1.8,0,7);ctx.fillStyle='#ffc65c';ctx.fill();
+      }
+    }
+    // gaze rays iris -> dot
+    const g=Engine.lastGaze;
+    if(lm&&g&&settings.rays){
+      for(const E of [LM.L,LM.R]){
+        const [cx,cy]=vm.p(lm[E.iris].x,lm[E.iris].y);
+        const grd=ctx.createLinearGradient(cx,cy,g.x,g.y);
+        grd.addColorStop(0,'rgba(245,165,36,.55)');grd.addColorStop(1,'rgba(245,165,36,0)');
+        ctx.beginPath();ctx.moveTo(cx,cy);ctx.lineTo(g.x,g.y);ctx.strokeStyle=grd;ctx.lineWidth=1.6;ctx.stroke();
+      }
+    }
+    // fx layer: trail + dot
+    const fx=this.fx; fx.clearRect(0,0,innerWidth,innerHeight);
+    if(g){
+      this.trail.push({x:g.x,y:g.y,t:performance.now()});
+      if(this.trail.length>40)this.trail.shift();
+    }
+    const now=performance.now();
+    if(settings.trail){
+      this.trail=this.trail.filter(p=>now-p.t<900);
+      for(const p of this.trail){
+        const a=(1-(now-p.t)/900)*0.35;
+        fx.beginPath();fx.arc(p.x,p.y,5,0,7);fx.fillStyle=`rgba(245,165,36,${a})`;fx.fill();
+      }
+    }
+    if(g){
+      fx.beginPath();fx.arc(g.x,g.y,15,0,7);fx.fillStyle='rgba(245,165,36,.18)';fx.fill();
+      fx.beginPath();fx.arc(g.x,g.y,8,0,7);fx.fillStyle='#f5a524';fx.shadowColor='#f5a524';fx.shadowBlur=18;fx.fill();fx.shadowBlur=0;
+      fx.beginPath();fx.arc(g.x,g.y,2.4,0,7);fx.fillStyle='#fff7e6';fx.fill();
+    }
+  }
+};
+
+/* ================= heatmap ================= */
+const Heat={
+  on:false, grid:null, GW:192, GH:108, samples:[],
+  init(){this.grid=new Float32Array(this.GW*this.GH);},
+  stamp(x,y){
+    if(!this.grid)return;
+    const cx=x/innerWidth*this.GW, cy=y/innerHeight*this.GH, R=7;
+    for(let gy=Math.max(0,cy-R|0);gy<Math.min(this.GH,cy+R);gy++)
+      for(let gx=Math.max(0,cx-R|0);gx<Math.min(this.GW,cx+R);gx++){
+        const d=Math.hypot(gx-cx,gy-cy)/R; if(d<1)this.grid[gy*this.GW+gx]+=Math.pow(1-d,2)*0.16;
+      }
+    this.samples.push({x:+(x/innerWidth).toFixed(4),y:+(y/innerHeight).toFixed(4),t:Date.now()});
+    if(this.samples.length>60000)this.samples.splice(0,5000);
+  },
+  render(){
+    const ctx=R.heat; ctx.clearRect(0,0,innerWidth,innerHeight);
+    if(!this.on||!this.grid)return;
+    const off=document.createElement('canvas');off.width=this.GW;off.height=this.GH;
+    const octx=off.getContext('2d'), img=octx.createImageData(this.GW,this.GH);
+    for(let i=0;i<this.grid.length;i++){
+      const v=clamp(this.grid[i],0,1), j=i*4;
+      img.data[j]=255; img.data[j+1]=140+60*(1-v); img.data[j+2]=30;
+      img.data[j+3]=Math.pow(v,0.8)*235;
+    }
+    octx.putImageData(img,0,0);
+    ctx.imageSmoothingEnabled=true;
+    ctx.drawImage(off,0,0,innerWidth,innerHeight);
+  },
+  clear(){this.grid&&this.grid.fill(0);this.samples=[];this.render();}
+};
+Heat.init();
+
+/* ================= privacy shield ================= */
+const Shield={
+  base:Store.get('pose0',null), engaged:false, dismissed:false,
+  overT:0, underT:0,
+  deg(f){ return Math.hypot((f.yaw-(this.base?this.base.yaw:0))*170, (f.pitch-(this.base?this.base.pitch:0))*170); },
+  pose(f){
+    if(!settings.shield||!Engine.running)return;
+    const d=this.deg(f), now=performance.now();
+    if(d>settings.angle)this.overT=now; else if(d<settings.angle*0.65)this.underT=now;
+    if(this.dismissed){ if(d<settings.angle*0.5)this.dismissed=false; else return; }
+    if(!this.engaged && now-this.underT>250 && d>settings.angle && now-this.overT<400 && this.overT>0){
+      // became engaged: overT recent
+    }
+    if(!this.engaged && d>settings.angle && now-this.overT<250){ this.engage(f); }
+    else if(this.engaged && d<settings.angle*0.65 && now-this.underT<250){ this.disengage(); }
+  },
+  engage(f){
+    this.engaged=true;
+    const s=$('shield');
+    const dir=(f.yaw-(this.base?this.base.yaw:0))>=0?'105deg':'75deg';
+    const b=settings.blur;
+    s.style.backdropFilter=`blur(${b}px)`; s.style.webkitBackdropFilter=`blur(${b}px)`;
+    s.style.background=`linear-gradient(${dir}, rgba(11,13,17,.68) 0%, rgba(11,13,17,.42) 45%, rgba(11,13,17,.88) 100%)`;
+    s.classList.remove('hidden');
+  },
+  disengage(){ this.engaged=false; $('shield').classList.add('hidden'); },
+  dismiss(){ this.dismissed=true; this.disengage(); },
+  recenter(){ this.base=null; const f=Engine.lastFeat; if(f){this.base={yaw:f.yaw,pitch:f.pitch};Store.set('pose0',this.base);} else {Store.set('pose0',null);} }
+};
+
+/* ================= calibration ================= */
+const Calib={
+  active:false, samples:[], idx:0, collected:0, phase:'calib', valErrs:[],
+  pts:[[.5,.5],[.12,.14],[.5,.1],[.88,.14],[.1,.5],[.9,.5],[.12,.86],[.5,.9],[.88,.86]],
+  vpts:[[.25,.32],[.75,.26],[.3,.74],[.72,.68]],
+  start(){
+    this.active=true; this.phase='calib'; this.samples=[]; this.valErrs=[]; this.idx=0;
+    $('calib-layer').classList.remove('hidden');
+    this._point();
+  },
+  _point(){
+    const list=this.phase==='calib'?this.pts:this.vpts;
+    if(this.idx>=list.length){ this.phase==='calib'?this._fit():this._report(); return; }
+    const [fx,fy]=list[this.idx];
+    const x=fx*innerWidth, y=fy*innerHeight;
+    const t=$('calib-target'), ring=$('calib-ring');
+    t.style.left=x+'px'; t.style.top=y+'px'; ring.style.left=x+'px'; ring.style.top=y+'px';
+    t.classList.remove('settle');
+    this.collected=0;
+    const need=this.phase==='calib'?22:14, total=list.length;
+    $('calib-info').innerHTML=(this.phase==='calib'?'Calibration':'Accuracy check')+' - point <b>'+(this.idx+1)+'</b> of <b>'+total+'</b> - '+(Engine.mode==='mouse'?'keep the pointer on the dot':'look at the dot and hold still');
+    $('calib-hint').textContent='';
+    setTimeout(()=>t.classList.add('settle'),80);
+    this._collect(need,()=>{ this.idx++; this._point(); });
+  },
+  _collect(need,done){
+    let lastT=0;
+    const step=()=>{
+      if(!this.active)return;
+      const feat=Engine.lastFeat, now=performance.now();
+      if(feat&&Engine.faceOk&&!feat.blink){
+        if(now-lastT>33){
+          lastT=now;
+          const list=this.phase==='calib'?this.pts:this.vpts;
+          const [fx,fy]=list[this.idx];
+          if(this.phase==='calib'){ this.samples.push({f:[...feat.f],x:fx,y:fy}); }
+          else if(Engine.betaX){
+            const px=clamp(dot(Engine.betaX,feat.f),0,1), py=clamp(dot(Engine.betaY,feat.f),0,1);
+            this.valErrs.push(Math.hypot((px-fx)*innerWidth,(py-fy)*innerHeight));
+          }
+          this.collected++;
+          $('calib-ring').style.background=`conic-gradient(var(--amber) ${this.collected/need*360}deg, rgba(245,165,36,.15) 0deg)`;
+          $('calib-ring').style.borderRadius='50%';
+          if(this.collected>=need){done();return;}
+        }
+      } else if(Engine.mode==='camera') {
+        $('calib-hint').textContent=Engine.faceOk?'Blinking - hold on':'Face not visible - move into frame';
+      }
+      setTimeout(step,16);
+    };
+    setTimeout(step,450); // settle before first sample
+  },
+  _fit(){
+    Engine.fit(this.samples);
+    this.phase='valid'; this.idx=0;
+    this._point();
+  },
+  _report(){
+    this.active=false; $('calib-layer').classList.add('hidden');
+    const errs=this.valErrs;
+    const mean=errs.length?errs.reduce((a,b)=>a+b,0)/errs.length:9999;
+    const grade=mean<60?'Excellent':mean<110?'Good':mean<180?'Fair':'Shaky';
+    Engine.accuracy={px:Math.round(mean),grade};
+    Engine.saveCalib();
+    updateAccBadge();
+    showModal(
+      grade==='Shaky'?'Calibration is shaky':'Calibration done',
+      `<div id="acc-report"><div class="big">±${Math.round(mean)} px</div>
+       <div class="grade" style="color:${grade==='Shaky'?'var(--bad)':'var(--ok)'}">${grade}</div>
+       <p class="mini" style="margin-top:8px">Average miss across ${errs.length} test fixations. ${grade==='Shaky'?'More even light and a steadier head usually fix this - recalibrate for a cleaner lock.':'The amber dot should now sit where you look.'}</p></div>`,
+      [{label:grade==='Shaky'?'Recalibrate':'Recalibrate anyway',cls:'btn-ghost',cb:()=>Calib.start()},
+       {label:'Start tracking',cls:'btn-amber',cb:()=>{}}]
+    );
+  }
+};
+
+/* ================= UI helpers ================= */
+function showModal(title,bodyHTML,actions){
+  $('modal-title').textContent=title;
+  $('modal-body').innerHTML=bodyHTML;
+  const box=$('modal-actions'); box.innerHTML='';
+  for(const a of actions){
+    const b=document.createElement('button');
+    b.className='btn '+(a.cls||'btn-amber'); b.textContent=a.label;
+    if(a.cls==='btn-ghost'){b.style.width='auto';b.style.marginRight='8px';}
+    else b.style.width='auto';
+    b.onclick=()=>{$('modal-wrap').classList.add('hidden'); a.cb&&a.cb();};
+    box.appendChild(b);
+  }
+  $('modal-wrap').classList.remove('hidden');
+}
+function updateAccBadge(){
+  const a=Engine.accuracy;
+  $('hud-acc').innerHTML=a?('accuracy <b>±'+a.px+' px · '+a.grade+'</b>'):'accuracy <b>not calibrated</b>';
+}
+function cameraError(e){
+  QA.errors.push('camera: '+e.name);
+  const retry={label:'Try again',cls:'btn-ghost',cb:()=>startFlow('camera')};
+  const practice={label:'Practice with mouse instead',cls:'btn-amber',cb:()=>startFlow('mouse')};
+  if(e.name==='NotAllowedError'||e.name==='SecurityError')
+    showModal('Camera access is blocked','<p>Gazescope needs the camera to track your eyes - and the video never leaves this device. Nothing is recorded or uploaded.</p><p>To allow it: tap the lock icon in your browser\'s address bar, set <b>Camera</b> to <b>Allow</b>, then try again.</p>',[retry,practice]);
+  else if(e.name==='NotFoundError'||e.name==='OverconstrainedError')
+    showModal('No camera showed up','<p>No usable camera was found on this device. If one is plugged in, check its connection - or practice with your mouse meanwhile.</p>',[retry,practice]);
+  else if(e.name==='NotReadableError'||e.name==='AbortError')
+    showModal('The camera is busy','<p>Another app or browser tab seems to be using the camera. Close it and try again.</p>',[retry,practice]);
+  else
+    showModal('The camera would not start','<p>Something unexpected happened ('+(e.name||'unknown')+'). Trying again usually sorts it.</p>',[retry,practice]);
+}
+
+/* ================= flow ================= */
+let tracking=false;
+async function startFlow(mode){
+  $('modal-wrap').classList.add('hidden');
+  $('intro-load').classList.remove('hidden');
+  $('btn-start').disabled=true;
+  try{
+    await Engine.initModel((p,label)=>{$('load-fill').style.width=(p*100)+'%'; if(label)$('load-label').textContent=label;});
+    if(mode==='camera') await Engine.startCamera();
+    else if(mode==='mouse') Engine.startMouse();
+    else Engine.startImage();
+  }catch(e){
+    $('intro-load').classList.add('hidden'); $('btn-start').disabled=false;
+    if(e&&e.name&&/Not|Security|Abort|Over/.test(e.name)) cameraError(e);
+    else showModal('Something did not load','<p>The on-device model could not start ('+(e&&e.message||e)+'). Reload the page and try again.</p>',[{label:'Reload',cb:()=>location.reload()}]);
+    return;
+  }
+  $('screen-intro').classList.add('hidden');
+  $('hud').classList.remove('hidden');
+  if(mode==='mouse')$('practice-banner').classList.remove('hidden');
+  if(mode==='image')$('demo-banner').classList.remove('hidden');
+  Engine.running=true; tracking=true;
+  Engine.pump(); loop();
+  Engine.resetSmoothing();
+  updateAccBadge();
+  const has=await Engine.loadCalib();
+  if(has&&mode!=='image'){ hudStatus('Tracking'); }
+  else if(mode!=='image') Calib.start();
+  if(mode==='image') startDemoOrbit();
+  if(settings.shield) $('btn-shield').classList.add('on');
+}
+function stopAll(){
+  tracking=false; Engine.stop(); Shield.disengage();
+  $('hud').classList.add('hidden');$('practice-banner').classList.add('hidden');$('demo-banner').classList.add('hidden');
+  $('calib-layer').classList.add('hidden');$('drawer').classList.add('hidden');
+  $('screen-intro').classList.remove('hidden');$('intro-load').classList.add('hidden');$('btn-start').disabled=false;
+}
+function loop(){ if(!tracking)return; R.draw(); requestAnimationFrame(loop); }
+function hudStatus(s){ $('hud-status').textContent=s; $('live-dot').classList.toggle('off',s!=='Tracking'&&s!=='Calibrating'); }
+
+/* continuous emitters */
+setInterval(()=>{ if(Engine.mode==='mouse'&&Engine.running&&Engine.lastFeat) Engine._emitFromFeat(Engine.lastFeat); },50);
+let demoT=0;
+function startDemoOrbit(){
+  setInterval(()=>{
+    if(Engine.mode!=='image'||!Engine.running)return;
+    demoT+=0.045;
+    const x=innerWidth*(0.5+0.33*Math.cos(demoT)), y=innerHeight*(0.5+0.3*Math.sin(demoT*1.4));
+    Engine.lastGaze={x,y,t:performance.now()};
+    if(Heat.on)Heat.stamp(x,y);
+  },50);
+}
+
+/* engine hooks */
+Engine.onGaze=(g,feat)=>{
+  if(!tracking)return;
+  if(g&&!Calib.active){ if(Heat.on)Heat.stamp(g.x,g.y); }
+  if(Calib.active)hudStatus('Calibrating');
+  else hudStatus(g?'Tracking':(Engine.faceOk?'Calibrate to track':'Face lost'));
+};
+Engine.onPose=f=>Shield.pose(f);
+setInterval(()=>{ if(tracking){Heat.render(); $('hud-fps').textContent=(Engine.mode==='mouse'?'--':Engine.fps)+' fps';} },500);
+
+/* ================= wiring ================= */
+$('btn-start').onclick=()=>startFlow('camera');
+$('btn-practice').onclick=()=>startFlow('mouse');
+$('btn-stop').onclick=stopAll;
+$('btn-recal').onclick=()=>Calib.start();
+$('calib-cancel').onclick=()=>{Calib.active=false;$('calib-layer').classList.add('hidden');};
+$('btn-heat').onclick=()=>{Heat.on=!Heat.on;$('btn-heat').classList.toggle('on',Heat.on);if(!Heat.on)R.heat.clearRect(0,0,innerWidth,innerHeight);};
+$('btn-shield').onclick=()=>{settings.shield=!settings.shield;saveSettings();$('btn-shield').classList.toggle('on',settings.shield);$('set-shield').classList.toggle('on',settings.shield);if(!settings.shield)Shield.disengage();};
+$('btn-settings').onclick=()=>$('drawer').classList.toggle('hidden');
+$('btn-drawer-close').onclick=()=>$('drawer').classList.add('hidden');
+addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(Shield.engaged)Shield.dismiss(); else $('drawer').classList.add('hidden'); } });
+addEventListener('resize',()=>R.resize());
+R.resize();
+
+/* settings widgets */
+function bindSwitch(id,key,cb){const el=$(id);el.classList.toggle('on',!!settings[key]);el.onclick=()=>{settings[key]=!settings[key];el.classList.toggle('on',settings[key]);saveSettings();cb&&cb();};}
+bindSwitch('set-trail','trail'); bindSwitch('set-mesh','mesh'); bindSwitch('set-rays','rays');
+bindSwitch('set-shield','shield',()=>{$('btn-shield').classList.toggle('on',settings.shield);if(!settings.shield)Shield.disengage();});
+bindSwitch('set-save','save');
+$('set-smooth').value=settings.smooth;
+$('set-smooth').oninput=e=>{settings.smooth=+e.target.value;$('set-smooth-v').textContent=e.target.value;saveSettings();Engine.resetSmoothing();};
+$('set-angle').value=settings.angle;
+$('set-angle').oninput=e=>{settings.angle=+e.target.value;$('set-angle-v').textContent=e.target.value+'°';saveSettings();};
+$('set-blur').value=settings.blur;
+$('set-blur').oninput=e=>{settings.blur=+e.target.value;$('set-blur-v').textContent=e.target.value+'px';saveSettings();};
+$('set-angle-v').textContent=settings.angle+'°';$('set-blur-v').textContent=settings.blur+'px';$('set-smooth-v').textContent=settings.smooth;
+$('btn-recenter').onclick=()=>{Shield.recenter();$('btn-recenter').textContent=Shield.base?'Centered - this is straight ahead':'Look at the screen, then tap again';setTimeout(()=>$('btn-recenter').textContent='Recenter "straight ahead"',2500);};
+$('btn-pass-save').onclick=async()=>{const p=$('set-pass').value;Store.pass=p||null;$('set-pass').value='';if(p){await Engine.saveCalib();if(settings.save)await Store.setSecure('session',{samples:Heat.samples});}$('btn-pass-save').textContent=p?'Passphrase set - saves are encrypted':'Encryption off';setTimeout(()=>$('btn-pass-save').textContent='Set passphrase',2500);};
+$('btn-export-csv').onclick=()=>download('gazescope-session.csv','x,y,t\n'+Heat.samples.map(s=>s.x+','+s.y+','+s.t).join('\n'),'text/csv');
+$('btn-export-json').onclick=()=>download('gazescope-session.json',JSON.stringify({app:'gazescope',exported:Date.now(),samples:Heat.samples},null,1),'application/json');
+$('btn-wipe').onclick=()=>{Store.wipe();Heat.clear();showModal('Wiped','<p>All Gazescope data on this device is gone.</p>',[{label:'OK',cb:()=>location.reload()}]);};
+function download(name,text,mime){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([text],{type:mime}));a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(a.href),4000);}
+
+/* session persistence */
+setInterval(async()=>{ if(settings.save&&tracking)await Store.setSecure('session',{samples:Heat.samples.slice(-60000)}); },8000);
+(async()=>{ const s=await Store.getSecure('session',null); if(s&&s.samples)Heat.samples=s.samples; })();
+
+/* ================= selftest (?selftest=1) ================= */
+async function selftest(){
+  const out=[]; const t=(n,ok,i)=>out.push({n,ok,i:String(i)});
+  try{ await Engine.initModel(); t('model_load_local',true,'FaceMesh from ./mediapipe/ (no CDN)'); }
+  catch(e){ t('model_load_local',false,e&&e.message||e); }
+  try{
+    await Engine.fm.send({image:$('demo-img')});
+    const det=Engine.lastLM;
+    t('detect_478_landmarks',!!(det&&det.length===478),det?det.length+' landmarks on bundled still':'no face found');
+    if(det){
+      const c=det[468],r0=det[469];
+      const rr=Math.hypot((r0.x-c.x)*768,(r0.y-c.y)*768);
+      t('iris_landmarks_live',rr>1.5&&rr<60,'left iris ring radius '+rr.toFixed(2)+'px');
+      const f=extractFeatures(det);
+      t('features_finite',f.f.every(Number.isFinite),'['+f.f.map(v=>+v.toFixed(3)).join(', ')+']');
+    }
+  }catch(e){ t('detect_478_landmarks',false,e&&e.message||e); }
+  try{
+    const d=13,A=Array.from({length:d},(_,i)=>Math.sin(i*3.7)*2),B=Array.from({length:d},(_,i)=>Math.cos(i*2.3)*2);
+    const X=[],yx=[],yy=[];
+    for(let i=0;i<240;i++){const f=Array.from({length:d},()=>Math.random()*2-1);f[0]=1;X.push(f);yx.push(dot(A,f)+(Math.random()-.5)*0.001);yy.push(dot(B,f)+(Math.random()-.5)*0.001);}
+    const ex=ridgeFit(X,yx,1e-6),ey=ridgeFit(X,yy,1e-6);
+    let se=0,st=0;
+    for(let i=0;i<200;i++){const p=dot(ex,X[i]);se+=(p-yx[i])**2;st+=(yx[i]-0.5)**2;}
+    const r2=1-se/Math.max(st,1e-9);
+    t('ridge_regression',r2>0.99,'held-train R² = '+r2.toFixed(4));
+  }catch(e){ t('ridge_regression',false,e&&e.message||e); }
+  try{
+    const enc=await Crypto_.encrypt('selftest',{ok:42}); const dec=await Crypto_.decrypt('selftest',enc);
+    t('crypto_aes_gcm',dec.ok===42,'PBKDF2 250k + AES-GCM roundtrip');
+  }catch(e){ t('crypto_aes_gcm',false,e&&e.message||e); }
+  const ext=performance.getEntriesByType('resource').filter(r=>new URL(r.name).origin!==location.origin).map(r=>new URL(r.name).host);
+  t('no_external_requests',ext.length===0,ext.length?ext.join(', '):'every resource same-origin');
+  const pass=out.filter(x=>x.ok).length;
+  QA.selftest=out;
+  const el=$('selftest');
+  el.classList.remove('hidden');
+  el.innerHTML='<b>GAZESCOPE SELFTEST</b>  '+pass+'/'+out.length+' PASS\n\n'+out.map(x=>(x.ok?'PASS':'FAIL')+'  '+x.n+'\n      '+x.i).join('\n');
+}
+
+/* ================= boot ================= */
+(async()=>{
+  try{ if($('demo-img').decode) await $('demo-img').decode(); }catch(e){}
+  const q=new URLSearchParams(location.search);
+  if(q.has('selftest')){ selftest(); return; }
+  if(q.get('demo')==='image'){ startFlow('image'); return; }
+})();
+</script>
+</body>
+</html>

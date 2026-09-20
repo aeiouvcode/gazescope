@@ -681,7 +681,7 @@ async function startFlow(mode){
   }catch(e){
     $('intro-load').classList.add('hidden'); $('btn-start').disabled=false;
     if(e&&e.name&&/Not|Security|Abort|Over/.test(e.name)) cameraError(e);
-    else showModal('Something did not load','<p>The on-device model could not start ('+(e&&e.message||e)+'). Reload the page and try again.</p>',[{label:'Reload',cb:()=>location.reload()}]);
+    else showModal('Something did not load','<p>The on-device model could not start this time. Reload the page and try again.</p>',[{label:'Reload',cb:()=>location.reload()}]);
     return;
   }
   $('screen-intro').classList.add('hidden');

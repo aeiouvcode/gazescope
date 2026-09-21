@@ -806,8 +806,8 @@ async function startFlow(mode){
   Engine.running=true; tracking=true;
   Engine.pump(); loop();
   Engine.resetSmoothing();
-  updateAccBadge();
   const has=await Engine.loadCalib();
+  updateAccBadge();
   if(has&&mode!=='image'){ hudStatus('Tracking'); }
   else if(mode!=='image') Calib.start();
   if(mode==='image') startDemoOrbit();

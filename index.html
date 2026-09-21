@@ -107,6 +107,19 @@ input[type=password]{background:var(--ink);border:1px solid var(--line);border-r
 #acc-report{margin-top:16px;background:var(--ink2);border:1px solid var(--line);border-radius:12px;padding:16px}
 #acc-report .big{font-size:30px;font-weight:800;color:var(--amber2)}
 #acc-report .grade{font-size:13px;font-weight:700;letter-spacing:.08em;text-transform:uppercase}
+#touch-layer{position:fixed;inset:0;z-index:50;background:radial-gradient(120% 120% at 50% 40%, #141922 0%, var(--ink) 70%)}
+#touch-target{position:absolute;left:50%;top:50%;width:56px;height:56px;margin:-28px 0 0 -28px;border-radius:50%;cursor:pointer;touch-action:none;
+  background:radial-gradient(circle,var(--amber2) 0 22%, var(--amber) 23% 45%, rgba(245,165,36,.18) 46% 100%);
+  box-shadow:0 0 32px rgba(245,165,36,.55)}
+#touch-ring{position:absolute;left:50%;top:50%;width:80px;height:80px;margin:-40px 0 0 -40px;border-radius:50%;pointer-events:none}
+#touch-info{position:fixed;top:14px;left:0;right:0;text-align:center;color:var(--mut);font-size:13.5px;z-index:51;padding:0 16px}
+#touch-info b{color:var(--txt)}
+#touch-hint{position:fixed;bottom:88px;left:0;right:0;text-align:center;color:var(--bad);font-size:13.5px;z-index:51}
+#touch-cancel{position:fixed;bottom:26px;left:50%;transform:translateX(-50%);z-index:51}
+#toast{position:fixed;bottom:56px;left:50%;transform:translate(-50%,8px);z-index:65;max-width:92vw;text-align:center;
+  background:rgba(16,19,26,.92);border:1px solid var(--line);color:var(--txt);border-radius:999px;padding:8px 16px;font-size:13px;
+  opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;backdrop-filter:blur(8px)}
+#toast.show{opacity:1;transform:translate(-50%,0)}
 #selftest{position:fixed;inset:0;z-index:100;background:var(--ink);padding:30px;overflow:auto;font:13px/1.6 ui-monospace,Menlo,Consolas,monospace;white-space:pre-wrap;color:var(--mut)}
 #selftest b{color:var(--txt)}
 .loadbar{height:4px;border-radius:2px;background:var(--line);overflow:hidden;margin:14px 0 4px}
@@ -158,6 +171,7 @@ input[type=password]{background:var(--ink);border:1px solid var(--line);border-r
   <button class="hud-btn" id="btn-shield">Privacy Shield</button>
   <button class="hud-btn" id="btn-heat">Heatmap</button>
   <button class="hud-btn" id="btn-recal">Recalibrate</button>
+  <button class="hud-btn" id="btn-touchup">Touch up</button>
   <button class="hud-btn" id="btn-settings">Settings</button>
   <button class="hud-btn" id="btn-stop">Stop</button>
 </div>
@@ -172,6 +186,17 @@ input[type=password]{background:var(--ink);border:1px solid var(--line);border-r
     <span>Look back at the screen to clear it, or press Esc to dismiss. Shielding covers this page only - not the rest of your screen.</span>
   </div>
 </div>
+
+<!-- ============ DRIFT TOUCH-UP ============ -->
+<div id="touch-layer" class="hidden">
+  <div id="touch-info"></div>
+  <div id="touch-ring"></div>
+  <div id="touch-target"></div>
+  <div id="touch-hint"></div>
+  <button id="touch-cancel" class="hud-btn">Cancel</button>
+</div>
+
+<div id="toast" class="hidden"></div>
 
 <!-- ============ SETTINGS DRAWER ============ -->
 <div id="drawer" class="hidden">
@@ -558,13 +583,45 @@ const Shield={
   recenter(){ this.base=null; const f=Engine.lastFeat; if(f){this.base={yaw:f.yaw,pitch:f.pitch};Store.set('pose0',this.base);} else {Store.set('pose0',null);} }
 };
 
+/* ================= robust calibration helpers ================= */
+const gradeOf=px=>px<60?'Excellent':px<110?'Good':px<180?'Fair':'Shaky';
+function evalAcc(bx,by,vs){
+  if(!vs||!vs.length)return null;
+  let s=0;
+  for(const v of vs){const px=clamp(dot(bx,v.f),0,1),py=clamp(dot(by,v.f),0,1);s+=Math.hypot((px-v.x)*innerWidth,(py-v.y)*innerHeight);}
+  return s/vs.length;
+}
+// per-point outlier rejection: median/MAD gate so one stray glance cannot bend the fit
+function prepSamples(samples){
+  const groups={};
+  for(const s of samples){const k=s.pi==null?'x':String(s.pi);(groups[k]=groups[k]||[]).push(s);}
+  const out=[];
+  for(const k in groups){
+    const g=groups[k];
+    if(g.length<6){out.push(...g);continue;}
+    const d=g[0].f.length, med=new Array(d).fill(0), mad=new Array(d).fill(0);
+    for(let j=0;j<d;j++){
+      const col=g.map(s=>s.f[j]).sort((a,b)=>a-b);
+      med[j]=col[col.length>>1];
+      const dev=col.map(v=>Math.abs(v-med[j])).sort((a,b)=>a-b);
+      mad[j]=dev[dev.length>>1]||1e-6;
+    }
+    const kept=g.filter(s=>{
+      let z=0; for(let j=1;j<d;j++)z=Math.max(z,Math.abs(s.f[j]-med[j])/(mad[j]*1.4826+1e-9));
+      return z<=3.5;
+    });
+    out.push(...(kept.length>=Math.min(4,Math.ceil(g.length*0.5))?kept:g));
+  }
+  return out;
+}
+
 /* ================= calibration ================= */
 const Calib={
-  active:false, samples:[], idx:0, collected:0, phase:'calib', valErrs:[],
+  active:false, samples:[], idx:0, collected:0, phase:'calib', valSamples:[],
   pts:[[.5,.5],[.12,.14],[.5,.1],[.88,.14],[.1,.5],[.9,.5],[.12,.86],[.5,.9],[.88,.86]],
   vpts:[[.25,.32],[.75,.26],[.3,.74],[.72,.68]],
   start(){
-    this.active=true; this.phase='calib'; this.samples=[]; this.valErrs=[]; this.idx=0;
+    this.active=true; this.phase='calib'; this.samples=[]; this.valSamples=[]; this.idx=0;
     $('calib-layer').classList.remove('hidden');
     this._point();
   },
@@ -593,11 +650,8 @@ const Calib={
           lastT=now;
           const list=this.phase==='calib'?this.pts:this.vpts;
           const [fx,fy]=list[this.idx];
-          if(this.phase==='calib'){ this.samples.push({f:[...feat.f],x:fx,y:fy}); }
-          else if(Engine.betaX){
-            const px=clamp(dot(Engine.betaX,feat.f),0,1), py=clamp(dot(Engine.betaY,feat.f),0,1);
-            this.valErrs.push(Math.hypot((px-fx)*innerWidth,(py-fy)*innerHeight));
-          }
+          if(this.phase==='calib'){ this.samples.push({f:[...feat.f],x:fx,y:fy,pi:this.idx}); }
+          else if(Engine.betaX){ this.valSamples.push({f:[...feat.f],x:fx,y:fy}); }
           this.collected++;
           $('calib-ring').style.background=`conic-gradient(var(--amber) ${this.collected/need*360}deg, rgba(245,165,36,.15) 0deg)`;
           $('calib-ring').style.borderRadius='50%';
@@ -611,15 +665,16 @@ const Calib={
     setTimeout(step,450); // settle before first sample
   },
   _fit(){
+    this.samples=prepSamples(this.samples);
     Engine.fit(this.samples);
     this.phase='valid'; this.idx=0;
     this._point();
   },
   _report(){
     this.active=false; $('calib-layer').classList.add('hidden');
-    const errs=this.valErrs;
-    const mean=errs.length?errs.reduce((a,b)=>a+b,0)/errs.length:9999;
-    const grade=mean<60?'Excellent':mean<110?'Good':mean<180?'Fair':'Shaky';
+    const nval=this.valSamples.length;
+    const mean=evalAcc(Engine.betaX,Engine.betaY,this.valSamples)??9999;
+    const grade=gradeOf(mean);
     Engine.accuracy={px:Math.round(mean),grade};
     Engine.saveCalib();
     updateAccBadge();
@@ -627,11 +682,64 @@ const Calib={
       grade==='Shaky'?'Calibration is shaky':'Calibration done',
       `<div id="acc-report"><div class="big">±${Math.round(mean)} px</div>
        <div class="grade" style="color:${grade==='Shaky'?'var(--bad)':'var(--ok)'}">${grade}</div>
-       <p class="mini" style="margin-top:8px">Average miss across ${errs.length} test fixations. ${grade==='Shaky'?'More even light and a steadier head usually fix this - recalibrate for a cleaner lock.':'The amber dot should now sit where you look.'}</p></div>`,
+       <p class="mini" style="margin-top:8px">Average miss across ${nval} test fixations. ${grade==='Shaky'?'More even light and a steadier head usually fix this - recalibrate for a cleaner lock.':'The amber dot should now sit where you look.'}</p></div>`,
       [{label:grade==='Shaky'?'Recalibrate':'Recalibrate anyway',cls:'btn-ghost',cb:()=>Calib.start()},
        {label:'Start tracking',cls:'btn-amber',cb:()=>{}}]
     );
   }
+};
+
+/* ================= drift touch-up ================= */
+// Real eye trackers drift as posture and light shift. Touch-up re-grounds the model:
+// look at the dot, hold, and the fresh samples are merged into the calibration and refit in place.
+const Touchup={
+  open:false, holding:false, got:[], added:[],
+  start(){
+    if(!Engine.betaX){ toast('Calibrate first - touch-up refines an existing calibration.'); return; }
+    if(!Calib.samples.length){ toast('Touch-up needs this session\'s calibration samples - recalibrate once (about 20 seconds) and it works from then on.'); return; }
+    this.open=true; this.holding=false; this.got=[];
+    $('touch-layer').classList.remove('hidden');
+    $('touch-info').innerHTML='Drift touch-up - <b>look at the dot</b>, then press and hold it'+(Engine.mode==='camera'?', or hold <b>Space</b>':'');
+    $('touch-hint').textContent='';
+    this._ring(0);
+  },
+  _ring(p){ const r=$('touch-ring'); r.style.background=`conic-gradient(var(--amber) ${p*360}deg, rgba(245,165,36,.15) 0deg)`; r.style.borderRadius='50%'; },
+  holdStart(){ if(!this.open||this.holding)return; this.holding=true; this.got=[]; this._collect(); },
+  holdEnd(){ if(this.holding){ this.holding=false; this._apply(); } },
+  _collect(){
+    const t0=performance.now();
+    const step=()=>{
+      if(!this.holding||!this.open)return;
+      const feat=Engine.lastFeat, now=performance.now();
+      if(feat&&Engine.faceOk&&!feat.blink){
+        this.got.push({f:[...feat.f],x:0.5,y:0.5,pi:'tu'});
+        $('touch-hint').textContent='';
+      } else if(Engine.mode==='camera') $('touch-hint').textContent=Engine.faceOk?'Blinking - hold on':'Face not visible - keep holding';
+      const p=clamp((now-t0)/900,0,1);
+      this._ring(p);
+      if(p>=1){ this.holding=false; this._apply(); return; }
+      setTimeout(step,33);
+    };
+    step();
+  },
+  _apply(){
+    if(this.got.length<8){ this._ring(0); toast('Too few samples - hold a little longer, looking at the dot.'); return; }
+    const before=evalAcc(Engine.betaX,Engine.betaY,Calib.valSamples);
+    this.added.push(...this.got);
+    const extra=[];
+    for(let i=0;i<4;i++)extra.push(...this.added); // recent samples outweigh the stale base
+    Engine.fit(prepSamples(Calib.samples).concat(extra));
+    Engine.saveCalib();
+    const after=evalAcc(Engine.betaX,Engine.betaY,Calib.valSamples);
+    if(before!=null&&after!=null){
+      Engine.accuracy={px:Math.round(after),grade:gradeOf(after)};
+      updateAccBadge();
+      const d=Math.round(before-after);
+      toast(d>2?`Touch-up applied - accuracy ±${Math.round(after)} px (was ±${Math.round(before)} px)`:`Touch-up applied - accuracy holding at ±${Math.round(after)} px`);
+    } else toast('Touch-up applied.');
+    this.close();
+  },
+  close(){ this.open=false; this.holding=false; $('touch-layer').classList.add('hidden'); }
 };
 
 /* ================= UI helpers ================= */
@@ -648,6 +756,13 @@ function showModal(title,bodyHTML,actions){
     box.appendChild(b);
   }
   $('modal-wrap').classList.remove('hidden');
+}
+let toastT=null;
+function toast(msg,ms){
+  const t=$('toast'); t.textContent=msg; t.classList.remove('hidden');
+  requestAnimationFrame(()=>t.classList.add('show'));
+  clearTimeout(toastT);
+  toastT=setTimeout(()=>{ t.classList.remove('show'); setTimeout(()=>t.classList.add('hidden'),260); },ms||3600);
 }
 function updateAccBadge(){
   const a=Engine.accuracy;
@@ -701,7 +816,7 @@ async function startFlow(mode){
 function stopAll(){
   tracking=false; Engine.stop(); Shield.disengage();
   $('hud').classList.add('hidden');$('practice-banner').classList.add('hidden');$('demo-banner').classList.add('hidden');
-  $('calib-layer').classList.add('hidden');$('drawer').classList.add('hidden');
+  $('calib-layer').classList.add('hidden');$('drawer').classList.add('hidden');$('touch-layer').classList.add('hidden');
   $('screen-intro').classList.remove('hidden');$('intro-load').classList.add('hidden');$('btn-start').disabled=false;
 }
 function loop(){ if(!tracking)return; R.draw(); requestAnimationFrame(loop); }
@@ -735,12 +850,19 @@ $('btn-start').onclick=()=>startFlow('camera');
 $('btn-practice').onclick=()=>startFlow('mouse');
 $('btn-stop').onclick=stopAll;
 $('btn-recal').onclick=()=>Calib.start();
+$('btn-touchup').onclick=()=>Touchup.start();
+$('touch-cancel').onclick=()=>Touchup.close();
+$('touch-target').addEventListener('pointerdown',e=>{e.preventDefault();Touchup.holdStart();});
+addEventListener('pointerup',()=>Touchup.holdEnd());
+addEventListener('pointercancel',()=>Touchup.holdEnd());
+addEventListener('keydown',e=>{ if(e.code==='Space'&&Touchup.open){e.preventDefault();Touchup.holdStart();} });
+addEventListener('keyup',e=>{ if(e.code==='Space'&&Touchup.open)Touchup.holdEnd(); });
 $('calib-cancel').onclick=()=>{Calib.active=false;$('calib-layer').classList.add('hidden');};
 $('btn-heat').onclick=()=>{Heat.on=!Heat.on;$('btn-heat').classList.toggle('on',Heat.on);if(!Heat.on)R.heat.clearRect(0,0,innerWidth,innerHeight);};
 $('btn-shield').onclick=()=>{settings.shield=!settings.shield;saveSettings();$('btn-shield').classList.toggle('on',settings.shield);$('set-shield').classList.toggle('on',settings.shield);if(!settings.shield)Shield.disengage();};
 $('btn-settings').onclick=()=>$('drawer').classList.toggle('hidden');
 $('btn-drawer-close').onclick=()=>$('drawer').classList.add('hidden');
-addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(Shield.engaged)Shield.dismiss(); else $('drawer').classList.add('hidden'); } });
+addEventListener('keydown',e=>{ if(e.key==='Escape'){ if(Shield.engaged)Shield.dismiss(); else if(Touchup.open)Touchup.close(); else $('drawer').classList.add('hidden'); } });
 addEventListener('resize',()=>R.resize());
 R.resize();
 
@@ -768,6 +890,7 @@ setInterval(async()=>{ if(settings.save&&tracking)await Store.setSecure('session
 (async()=>{ const s=await Store.getSecure('session',null); if(s&&s.samples)Heat.samples=s.samples; })();
 
 /* ================= selftest (?selftest=1) ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
 async function selftest(){
   const out=[]; const t=(n,ok,i)=>out.push({n,ok,i:String(i)});
   try{ await Engine.initModel(); t('model_load_local',true,'FaceMesh from ./mediapipe/ (no CDN)'); }
@@ -798,6 +921,50 @@ async function selftest(){
     const enc=await Crypto_.encrypt('selftest',{ok:42}); const dec=await Crypto_.decrypt('selftest',enc);
     t('crypto_aes_gcm',dec.ok===42,'PBKDF2 250k + AES-GCM roundtrip');
   }catch(e){ t('crypto_aes_gcm',false,e&&e.message||e); }
+  try{
+    // a stray glance mid-calibration must not bend the fit
+    const rng=mulberry32(7);
+    const d=13, A=Array.from({length:d},(_,i)=>Math.sin(i*3.7)*2);
+    const mk=()=>{const f=Array.from({length:d},()=>rng()*2-1);f[0]=1;return f;};
+    const all=[];
+    for(let p=0;p<9;p++)for(let i=0;i<22;i++){const f=mk();all.push({f,x:dot(A,f),y:dot(A,f)*0.5,pi:p});}
+    const nClean=all.length;
+    for(let i=0;i<10;i++){const f=mk().map(v=>v*4+3);f[0]=1;all.push({f,x:0.01,y:0.99,pi:i%9});}
+    const bxRaw=ridgeFit(all.map(s=>s.f),all.map(s=>s.x),1e-2);
+    const cleaned=prepSamples(all);
+    const bxClean=ridgeFit(cleaned.map(s=>s.f),cleaned.map(s=>s.x),1e-2);
+    let eRaw=0,eCl=0,n=0;
+    for(let i=0;i<120;i++){const f=mk();const y=dot(A,f);eRaw+=(dot(bxRaw,f)-y)**2;eCl+=(dot(bxClean,f)-y)**2;n++;}
+    const rRaw=Math.sqrt(eRaw/n), rCl=Math.sqrt(eCl/n);
+    t('calib_outlier_rejection',cleaned.length<all.length&&rCl<rRaw*0.7,'rmse '+rRaw.toFixed(3)+' -> '+rCl.toFixed(3)+' ('+(all.length-cleaned.length)+' of '+all.length+' samples dropped)');
+  }catch(e){ t('calib_outlier_rejection',false,e&&e.message||e); }
+  try{
+    // drift touch-up: after the feature stream drifts, merged refit beats the stale model
+    const rng=mulberry32(11);
+    const d=13;
+    // feature generator: target -> plausible features, then a drift offset appears later
+    const gen=(tx,ty,drift)=>{const f=Array.from({length:d},()=>(rng()-0.5)*0.06);f[0]=1;
+      f[1]=(tx-0.5)*1.1+drift; f[2]=(ty-0.5)*1.1+drift*0.6; f[3]=f[1]*0.9; f[4]=f[2]*0.9; f[5]=f[1]*1.05; f[6]=f[2]*1.05;
+      f[7]=(tx-0.5)*0.2; f[8]=(ty-0.5)*0.2; return f;};
+    const base=[];
+    for(let p=0;p<9;p++){const tx=0.12+0.76*(p%3)/2, ty=0.12+0.76*Math.floor(p/3)/2;
+      for(let i=0;i<20;i++)base.push({f:gen(tx,ty,0),x:tx,y:ty,pi:p});}
+    const bx0=ridgeFit(base.map(s=>s.f),base.map(s=>s.x),1e-2);
+    const by0=ridgeFit(base.map(s=>s.f),base.map(s=>s.y),1e-2);
+    const DRIFT=0.22;
+    const errOn=(bx,by)=>{let s=0,n=0;
+      for(let p=0;p<9;p++){const tx=0.12+0.76*(p%3)/2, ty=0.12+0.76*Math.floor(p/3)/2;
+        for(let i=0;i<10;i++){const f=gen(tx,ty,DRIFT);s+=Math.hypot(clamp(dot(bx,f),0,1)-tx,clamp(dot(by,f),0,1)-ty);n++;}}
+      return s/n;};
+    const eBefore=errOn(bx0,by0);
+    const tu=[]; for(let i=0;i<30;i++)tu.push({f:gen(0.5,0.5,DRIFT),x:0.5,y:0.5,pi:'tu'});
+    const extra=[]; for(let i=0;i<4;i++)extra.push(...tu);
+    const merged=prepSamples(base).concat(extra);
+    const bx1=ridgeFit(merged.map(s=>s.f),merged.map(s=>s.x),1e-2);
+    const by1=ridgeFit(merged.map(s=>s.f),merged.map(s=>s.y),1e-2);
+    const eAfter=errOn(bx1,by1);
+    t('touchup_drift_correction',eAfter<eBefore*0.6,'mean error '+eBefore.toFixed(4)+' -> '+eAfter.toFixed(4)+' after one touch-up');
+  }catch(e){ t('touchup_drift_correction',false,e&&e.message||e); }
   const ext=performance.getEntriesByType('resource').filter(r=>new URL(r.name).origin!==location.origin).map(r=>new URL(r.name).host);
   t('no_external_requests',ext.length===0,ext.length?ext.join(', '):'every resource same-origin');
   const pass=out.filter(x=>x.ok).length;
@@ -817,3 +984,4 @@ async function selftest(){
 </script>
 </body>
 </html>
+

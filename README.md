@@ -7,6 +7,8 @@ server, no account).
 
 ## Features
 - 9-point calibration (~20s) + ridge-regression gaze model, accuracy readout in px
+- Robust calibration: per-point outlier rejection keeps a stray glance from bending the fit
+- Drift touch-up: when the dot starts to wander, look at the target and hold - fresh samples merge into the calibration and refit in place, with a before/after accuracy readout
 - Live AR overlay: mirrored camera, face mesh, eye contours, iris rings, gaze rays, smoothed gaze dot with trail (One Euro filter)
 - Session heatmap, CSV/JSON export, optional AES-GCM encryption of saved data (passphrase, PBKDF2 250k)
 - Privacy Shield: head-pose yaw/pitch watch; turn away past your comfort angle (2-30 deg, default 15) and the page blurs behind a gradient. Look back to clear, Esc to dismiss. Protects this page only.

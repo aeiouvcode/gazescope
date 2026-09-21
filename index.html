@@ -729,7 +729,6 @@ const Touchup={
     const extra=[];
     for(let i=0;i<4;i++)extra.push(...this.added); // recent samples outweigh the stale base
     Engine.fit(prepSamples(Calib.samples).concat(extra));
-    Engine.saveCalib();
     const after=evalAcc(Engine.betaX,Engine.betaY,Calib.valSamples);
     if(before!=null&&after!=null){
       Engine.accuracy={px:Math.round(after),grade:gradeOf(after)};
@@ -737,6 +736,7 @@ const Touchup={
       const d=Math.round(before-after);
       toast(d>2?`Touch-up applied - accuracy ±${Math.round(after)} px (was ±${Math.round(before)} px)`:`Touch-up applied - accuracy holding at ±${Math.round(after)} px`);
     } else toast('Touch-up applied.');
+    Engine.saveCalib();
     this.close();
   },
   close(){ this.open=false; this.holding=false; $('touch-layer').classList.add('hidden'); }

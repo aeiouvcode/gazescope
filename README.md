@@ -5,6 +5,10 @@ leave the device: all face, iris and head-pose processing runs locally in WebAss
 (MediaPipe Face Mesh with iris refinement, vendored under `mediapipe/` - no CDN, no
 server, no account).
 
+![GAZESCOPE start screen](docs/screenshot.jpg)
+
+**Live:** https://aeiouvcode.github.io/gazescope/
+
 ## Features
 - 9-point calibration (~20s) + ridge-regression gaze model, accuracy readout in px
 - Robust calibration: per-point outlier rejection keeps a stray glance from bending the fit
